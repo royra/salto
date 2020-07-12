@@ -14,6 +14,7 @@
 * limitations under the License.
 */
 import _ from 'lodash'
+import { NonFunctionProperties } from './serialization'
 
 export type ElemIDType = 'type' | 'field' | 'instance' | 'attr' | 'annotation' | 'var'
 export const ElemIDTypes = ['type', 'field', 'instance', 'attr', 'annotation', 'var'] as ReadonlyArray<string>
@@ -194,5 +195,9 @@ export class ElemID {
       }
     }
     return { parent, path }
+  }
+
+  clone(): ElemID {
+    return new ElemID(this.adapter, this.typeName, this.idType, ...this.nameParts)
   }
 }

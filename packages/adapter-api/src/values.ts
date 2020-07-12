@@ -14,11 +14,12 @@
 * limitations under the License.
 */
 import _ from 'lodash'
-import { hash as hashUtils, types } from '@salto-io/lowerdash'
+import { hash as hashUtils } from '@salto-io/lowerdash'
 import { ElemID } from './element_id'
 // There is a real cycle here and alternatively elements.ts should be defined in the same file
 // eslint-disable-next-line import/no-cycle
-import { Element } from './elements'
+import {Element, isElement} from './elements'
+import {Serializer, NonFunctionProperties} from './serialization'
 
 export type PrimitiveValue = string | boolean | number
 
@@ -44,8 +45,9 @@ export type StaticFileParameters = {
 } & HashOrContent
 
 export class StaticFile {
-  public readonly filepath: string
-  public readonly hash: string
+  static _salto_class = 'StaticFile'
+  readonly filepath: string
+  readonly hash: string
   protected internalContent?: Buffer
   constructor(params: StaticFileParameters) {
     this.filepath = params.filepath
@@ -64,6 +66,25 @@ export class StaticFile {
   public isEqual(other: StaticFile): boolean {
     return this.hash === other.hash
   }
+
+  static Serializer = (
+    readStaicFile: (v: StaticFile) => Promise<StaticFile | InvalidStaticFile>
+  ): Serializer<
+    StaticFile,
+    Omit<NonFunctionProperties<StaticFile>, 'internalContent'>
+  > => ({
+    uniqueTypeName: 'StaticFile',
+    toPlainObject: v => _.omit(
+      v,
+      'content',
+      'internalContent',
+    ) as Omit<NonFunctionProperties<StaticFile>, 'internalContent'>,
+    fromPlainObject: v => {
+      const result = Object.setPrototypeOf(v, StaticFile.prototype)
+      registry[v.filepath] = result
+      return result
+    },
+  })
 }
 
 export class ReferenceExpression {
@@ -93,6 +114,30 @@ export class ReferenceExpression {
       ? this.resValue.value
       : this.resValue
   }
+
+  clone(): ReferenceExpression {
+    return new ReferenceExpression(this.elemId)
+  }
+
+  static serializerBase = (uniqueTypeName: string) => (
+    mode: 'replaceRefWithValue' | 'keepRef' = 'replaceRefWithValue',
+  ): Serializer<ReferenceExpression> => ({
+    uniqueTypeName,
+    toPlainObject: v => {
+      if (v.value === undefined || mode === 'keepRef') {
+        return v.createWithValue(undefined)
+      }
+      // Replace ref with value in order to keep the result from changing between
+      // a fetch and a deploy.
+      if (isElement(v.value)) {
+        return new ReferenceExpression(v.value.elemID)
+      }
+      return v
+    },
+    fromPlainObject: v => Object.setPrototypeOf(v, ReferenceExpression.prototype),
+  })
+
+  static serializer = ReferenceExpression.serializerBase('ReferenceExpression')
 }
 
 export class VariableExpression extends ReferenceExpression {
@@ -109,9 +154,21 @@ export class VariableExpression extends ReferenceExpression {
       } is a ${elemId.idType}`)
     }
   }
+
+  static serializer = ReferenceExpression.serializerBase('VariableExpression')
 }
 
-export class TemplateExpression extends types.Bean<{ parts: TemplatePart[] }> { }
+export class TemplateExpression {
+  readonly parts: TemplatePart[]
+  constructor({ parts }: { parts: TemplatePart[] }) {
+    this.parts = parts
+  }
+
+  static serializer: Serializer<TemplateExpression> = {
+    uniqueTypeName: 'TemplateExpression',
+    fromPlainObject: v => Object.setPrototypeOf(v, TemplateExpression.prototype),
+  }
+}
 
 export type Expression = ReferenceExpression | TemplateExpression
 

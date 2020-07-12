@@ -18,6 +18,7 @@ import { ElemID } from './element_id'
 // There is a real cycle here and alternatively values.ts should be defined in the same file
 // eslint-disable-next-line import/no-cycle
 import { Values, isEqualValues, Value } from './values'
+import { Serializer, NonFunctionProperties } from './serialization'
 
 /**
  * An abstract class that represent the base element.
@@ -97,6 +98,36 @@ export abstract class Element {
    * @return {Type} the cloned instance
    */
   abstract clone(annotations?: Values): Element
+
+  static fromPlainObject = <
+    T extends Element,
+    ConstructorArgs extends unknown[],
+    V extends NonFunctionProperties<T>,
+  >(
+    c: { new(...args: ConstructorArgs): T },
+    v: V,
+  ): T => Object.setPrototypeOf(
+    Object.assign(v, {
+      elemID: ElemID.fromPlainObject(
+        // @ts-ignore
+        v.elemID,
+      ),
+    }),
+    c.prototype,
+  )
+
+  static baseSerializer = <
+    T extends Element,
+    V extends NonFunctionProperties<T> = NonFunctionProperties<T>,
+  >(
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    c: { new(...args: any[]): T },
+    uniqueTypeName: string,
+    fromPlainObject: Serializer<T, V>['fromPlainObject'] = v => Element.fromPlainObject(c, v),
+  ): Serializer<T, V> => ({
+    uniqueTypeName,
+    fromPlainObject,
+  })
 }
 export type ElementMap = Record<string, Element>
 
@@ -114,7 +145,7 @@ export type TypeMap = Record<string, TypeElement>
 
 export class ListType extends Element {
   public constructor(
-   public innerType: TypeElement
+    public innerType: TypeElement,
   ) {
     super({
       elemID: new ElemID('', `list<${innerType.elemID.getFullName()}>`),
@@ -133,6 +164,8 @@ export class ListType extends Element {
       this.innerType
     )
   }
+
+  static serializer = Element.baseSerializer(ListType, 'ListType')
 }
 
 /**
@@ -167,6 +200,8 @@ export class Field extends Element {
       annotations === undefined ? _.cloneDeep(this.annotations) : annotations,
     )
   }
+
+  static serializer = Element.baseSerializer(Field, 'Field')
 }
 export type FieldMap = Record<string, Field>
 
@@ -211,6 +246,8 @@ export class PrimitiveType extends Element {
     res.annotate(additionalAnnotations)
     return res
   }
+
+  static serializer = Element.baseSerializer(PrimitiveType, 'PrimitiveType')
 }
 
 export type FieldDefinition = {
@@ -221,6 +258,7 @@ export type FieldDefinition = {
  * Defines a type that represents an object (Also NOT auto generated)
  */
 export class ObjectType extends Element {
+  static _salto_class = 'ObjectType'
   fields: FieldMap
   isSettings: boolean
 
@@ -287,9 +325,13 @@ export class ObjectType extends Element {
 
     return res
   }
+
+  static serializer = Element.baseSerializer(ObjectType, 'Variable')
 }
 
 export class InstanceElement extends Element {
+  static _salto_class = 'InstanceElement'
+
   constructor(name: string,
     public type: ObjectType,
     public value: Values = {},
@@ -322,6 +364,8 @@ export class InstanceElement extends Element {
     return new InstanceElement(this.elemID.name, this.type, _.cloneDeep(this.value), this.path,
       _.cloneDeep(this.annotations))
   }
+
+  static serializer = Element.baseSerializer(InstanceElement, 'InstanceElement')
 }
 
 export class Variable extends Element {
@@ -338,6 +382,8 @@ export class Variable extends Element {
   clone(): Variable {
     return new Variable(this.elemID, _.cloneDeep(this.value), this.path)
   }
+
+  static serializer = Element.baseSerializer(Variable, 'Variable')
 }
 
 /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
@@ -345,40 +391,31 @@ export function isElement(value: any): value is Element {
   return value && value.elemID && value.elemID instanceof ElemID
 }
 
-/* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-export function isInstanceElement(element: any): element is InstanceElement {
+export function isInstanceElement(element: unknown): element is InstanceElement {
   return element instanceof InstanceElement
 }
 
-/* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-export function isObjectType(element: any): element is ObjectType {
+export function isObjectType(element: unknown): element is ObjectType {
   return element instanceof ObjectType
 }
 
-export function isPrimitiveType(
-  /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-  element: any,
-): element is PrimitiveType {
+export function isPrimitiveType(element: unknown): element is PrimitiveType {
   return element instanceof PrimitiveType
 }
 
-/* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-export function isListType(element: any): element is ListType {
+export function isListType(element: unknown): element is ListType {
   return element instanceof ListType
 }
 
-/* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-export function isVariable(element: any): element is Variable {
+export function isVariable(element: unknown): element is Variable {
   return element instanceof Variable
 }
 
-/* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-export function isType(element: any): element is TypeElement {
+export function isType(element: unknown): element is TypeElement {
   return isPrimitiveType(element) || isObjectType(element) || isListType(element)
 }
 
-/* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-export function isField(element: any): element is Field {
+export function isField(element: unknown): element is Field {
   return element instanceof Field
 }
 

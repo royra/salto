@@ -14,6 +14,7 @@
 * limitations under the License.
 */
 import * as collections from './collections'
+import * as objects from './objects'
 import * as promises from './promises'
 import * as types from './types'
 import * as decorators from './decorators'
@@ -25,9 +26,11 @@ import * as validators from './validators'
 import * as stack from './stack'
 import * as hash from './hash'
 import * as values from './values'
+import * as serialization from './serialization'
 
 export {
   collections,
+  objects,
   promises,
   types,
   decorators,
@@ -39,4 +42,5 @@ export {
   stack,
   hash,
   values,
+  serialization,
 }

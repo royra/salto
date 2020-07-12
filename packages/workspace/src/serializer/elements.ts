@@ -13,6 +13,7 @@
 * See the License for the specific language governing permissions and
 * limitations under the License.
 */
+import { inspect } from 'util'
 import _ from 'lodash'
 import { types } from '@salto-io/lowerdash'
 import {
@@ -21,8 +22,8 @@ import {
   ReferenceExpression, TemplateExpression, VariableExpression,
   isInstanceElement, isReferenceExpression, Variable, isListType, StaticFile, isStaticFile,
 } from '@salto-io/adapter-api'
-
 import { InvalidStaticFile } from '../workspace/static_files/common'
+import { HasSerializer } from '@salto-io/adapter-api/dist/src/serialization'
 
 // There are two issues with naive json stringification:
 //
@@ -43,90 +44,126 @@ import { InvalidStaticFile } from '../workspace/static_files/common'
 
 // Do not use the class's name for serialization since it can change (e.g. by webpack)
 /* eslint-disable object-shorthand */
-const NameToType = {
-  InstanceElement: InstanceElement,
-  ObjectType: ObjectType,
-  Variable: Variable,
-  PrimitiveType: PrimitiveType,
-  ListType: ListType,
-  Field: Field,
-  TemplateExpression: TemplateExpression,
-  ReferenceExpression: ReferenceExpression,
-  VariableExpression: VariableExpression,
-  StaticFile: StaticFile,
-}
+// const NameToType = {
+//   InstanceElement: InstanceElement,
+//   ObjectType: ObjectType,
+//   Variable: Variable,
+//   PrimitiveType: PrimitiveType,
+//   ListType: ListType,
+//   Field: Field,
+//   TemplateExpression: TemplateExpression,
+//   ReferenceExpression: ReferenceExpression,
+//   VariableExpression: VariableExpression,
+//   StaticFile: StaticFile,
+// }
 
-type SerializedName = keyof typeof NameToType
-type Serializable = InstanceType<types.ValueOf<typeof NameToType>>
+// export type SerializableClass<
+//   T extends typeof SerializableBase = typeof SerializableBase,
+//   Args extends ConstructorParameters<T> = ConstructorParameters<T>,
+// > = {
+//   new(...args: Args[]): T
+//   _salto_class: string
+// }
 
-export const SALTO_CLASS_FIELD = '_salto_class'
-type SerializedClass = {
-  [SALTO_CLASS_FIELD]: SerializedName
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [key: string]: any
-}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const classes: HasSerializedClassName[] = [
+  InstanceElement,
+  ObjectType,
+  Variable,
+  PrimitiveType,
+  ListType,
+  Field,
+  TemplateExpression,
+  ReferenceExpression,
+  VariableExpression,
+  StaticFile,
+]
 
-const ctorNameToSerializedName: Record<string, SerializedName> = _(NameToType).entries()
-  .map(([name, type]) => [type.name, name]).fromPairs()
-  .value()
+const makeReviverEntry = <
+  T extends HasSerializedClassName & { new(...args: Args): unknown },
+  V extends NonFunctionProperties<InstanceType<T>> = NonFunctionProperties<InstanceType<T>>,
+  Args extends never[] = never[],
+>(
+    clazz: T,
+    r: FromPlainObject<InstanceType<T>, V>,
+    // eslint-disable-next-line no-underscore-dangle
+  ): [string, FromPlainObject<InstanceType<T>, V>] => [clazz._salto_class, r]
+
+const revivers: Record<string, FromPlainObject<unknown>> = Object.fromEntries([
+  makeReviverEntry(InstanceElement, v => InstanceElement.prototype.clone.call(v)),
+  makeReviverEntry(ObjectType, v => ObjectType.prototype.clone.call(v)),
+])
+
+const nameToClass = (() => {
+  // eslint-disable-next-line no-underscore-dangle
+  const nameToClasses = _.groupBy(classes, c => c._salto_class)
+  const duplicateClassNames = Object.fromEntries(
+    Object.entries(nameToClasses).filter(([_k, c]) => c.length > 1)
+  )
+  if (Object.keys(duplicateClassNames).length > 0) {
+    throw new Error(`duplicate _salto_class in classes: ${inspect(duplicateClassNames)}`)
+  }
+  return _.mapValues(nameToClasses, v => v[0])
+})()
 
 type ReviverMap = {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  [K in SerializedName]: (v: any) => InstanceType<(typeof NameToType)[K]>
+  [P in keyof typeof nameToClass]: (typeof nameToClass)[P]
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isSaltoSerializable(value: any): value is Serializable {
-  return _.some(Object.values(NameToType).map(t => value instanceof t))
-}
+// type ReviverMap = {
+//   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+//   [K in SerializedName]: (v: any) => InstanceType<(typeof NameToType)[K]>
+// }
+//
+// // eslint-disable-next-line @typescript-eslint/no-explicit-any
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function isSerializedClass(value: any): value is SerializedClass {
-  return _.isPlainObject(value) && SALTO_CLASS_FIELD in value
-    && value[SALTO_CLASS_FIELD] in NameToType
-}
+// // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// function isSerializedClass(value: any): value is SerializedClass {
+//   return _.isPlainObject(value) && SALTO_CLASS_FIELD in value
+//     && value[SALTO_CLASS_FIELD] in NameToType
+// }
 
-export const serialize = (elements: Element[],
-  referenceSerializerMode: 'replaceRefWithValue' | 'keepRef' = 'replaceRefWithValue'): string => {
-  const saltoClassReplacer = <T extends Serializable>(e: T): T & SerializedClass => {
-    // Add property SALTO_CLASS_FIELD
-    const o = e as T & SerializedClass
-    o[SALTO_CLASS_FIELD] = ctorNameToSerializedName[e.constructor.name]
-    return o
-  }
-  const staticFileReplacer = (e: StaticFile): Omit<Omit<StaticFile & SerializedClass, 'internalContent'>, 'content'> => (
-    _.omit(saltoClassReplacer(e), 'content', 'internalContent')
-  )
-  const referenceExpressionReplacer = (e: ReferenceExpression):
-    ReferenceExpression & SerializedClass => {
+const sortObjectProps = (o: Record<string, unknown>): Record<string, unknown> => Object.fromEntries(
+  Object.entries(o).sort(([k1], [k2]) => k1.localeCompare(k2))
+)
+
+export const serialize = (
+  elements: Element[],
+  referenceSerializerMode: 'replaceRefWithValue' | 'keepRef' = 'replaceRefWithValue'
+): string => {
+  const staticFileReplacer = (
+    e: StaticFile
+  ): Omit<StaticFile, 'internalContent' | 'content'> => _.omit(e, 'content', 'internalContent')
+
+  const referenceExpressionReplacer = (
+    e: ReferenceExpression
+  ): ReferenceExpression => {
     if (e.value === undefined || referenceSerializerMode === 'keepRef') {
-      return saltoClassReplacer(e.createWithValue(undefined))
+      return e.createWithValue(undefined)
     }
     // Replace ref with value in order to keep the result from changing between
     // a fetch and a deploy.
     if (isElement(e.value)) {
-      return saltoClassReplacer(new ReferenceExpression(e.value.elemID))
+      return new ReferenceExpression(e.value.elemID)
     }
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    return generalReplacer(e.value)
+    return generalReplacer(e.value) as ReferenceExpression
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const generalReplacer = (e: any): any => {
+  const generalReplacer = (e: HasSerializedClassName): HasSerializedClassName | unknown => {
     if (isReferenceExpression(e)) {
       return referenceExpressionReplacer(e)
     }
+
     if (isStaticFile(e)) {
       return staticFileReplacer(e)
     }
-    if (isSaltoSerializable(e)) {
-      return saltoClassReplacer(e)
-    }
+
     // We need to sort objects so that the state file won't change for the same data.
     if (_.isPlainObject(e)) {
-      return _(e).toPairs().sortBy().fromPairs()
-        .value()
+      return sortObjectProps(e)
     }
+
     return e
   }
 
@@ -151,51 +188,50 @@ export const deserialize = async (
     new ElemID(v.adapter, v.typeName, v.idType, ...v.nameParts)
   )
 
-  let staticFiles: Record<string, StaticFile> = {}
+  const defaultReviver = <
+    P extends { new(...args: unknown[]): T },
+    T extends { clone: () => T },
+  >() => (o: P) => o.prototype.clone.apply(o)
 
-  const revivers: ReviverMap = {
-    InstanceElement: v => new InstanceElement(
-      reviveElemID(v.elemID).name,
-      v.type,
-      v.value,
-      undefined,
-      v.annotations,
-    ),
-    ObjectType: v => new ObjectType({
+  const staticFiles: Record<string, StaticFile> = {}
+
+  const revivers: Record<keyof typeof nameToClass, (v: any) => any> = {
+    InstanceElement: x,
+    ObjectType: (v: ObjectType) => new ObjectType({
       elemID: reviveElemID(v.elemID),
       fields: v.fields,
       annotationTypes: v.annotationTypes,
       annotations: v.annotations,
       isSettings: v.isSettings,
     }),
-    Variable: v => (
+    Variable: (v: Variable) => (
       new Variable(reviveElemID(v.elemID), v.value)
     ),
-    PrimitiveType: v => new PrimitiveType({
+    PrimitiveType: (v: PrimitiveType) => new PrimitiveType({
       elemID: reviveElemID(v.elemID),
       primitive: v.primitive,
       annotationTypes: v.annotationTypes,
       annotations: v.annotations,
     }),
-    ListType: v => new ListType(
+    ListType: (v: ListType) => new ListType(
       v.innerType
     ),
-    Field: v => new Field(
+    Field: (v: Field) => new Field(
       new ObjectType({ elemID: reviveElemID(v.elemID).createParentID() }),
       v.name,
       v.type,
       v.annotations,
     ),
-    TemplateExpression: v => (
+    TemplateExpression: (v: TemplateExpression) => (
       new TemplateExpression({ parts: v.parts })
     ),
-    ReferenceExpression: v => (
+    ReferenceExpression: (v: ReferenceExpression) => (
       new ReferenceExpression(reviveElemID(v.elemId))
     ),
-    VariableExpression: v => (
+    VariableExpression: (v: VariableExpression) => (
       new VariableExpression(reviveElemID(v.elemId))
     ),
-    StaticFile: v => {
+    StaticFile: (v: StaticFile) => {
       const staticFile = new StaticFile({ filepath: v.filepath, hash: v.hash })
       staticFiles[staticFile.filepath] = staticFile
       return staticFile
@@ -203,9 +239,10 @@ export const deserialize = async (
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const elementReviver = (_k: string, v: any): any => {
-    if (isSerializedClass(v)) {
-      const reviver = revivers[v[SALTO_CLASS_FIELD]]
+  const elementReviver = (_k: string, v: unknown): any => {
+    if (hasSerializedClassName(v)) {
+      // eslint-disable-next-line no-underscore-dangle
+      const reviver = revivers[v._salto_class]
       const e = reviver(v)
       if (isType(e) || isInstanceElement(e)) {
         e.path = v.path
